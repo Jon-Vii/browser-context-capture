@@ -64,11 +64,6 @@ The markdown format makes your browsing history trivially accessible to AI agent
 - AI can cross-reference browser history with your notes and documents
 - Build a searchable timeline of your digital research
 
-**MCP Server Integration**
-- Use with [Model Context Protocol](https://modelcontextprotocol.io/) servers
-- AI agents can directly read `~/memex/browser/*.md` files
-- Provide automatic browsing context without manual prompting
-
 ### Implementation
 
 Simply point your AI agent to `~/memex/browser/` and it can:
