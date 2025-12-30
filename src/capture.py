@@ -2,7 +2,7 @@
 """
 Browser Context Capture
 
-Reads Chrome browser history and generates weekly markdown digests.
+Reads Chrome and Safari browser history and generates daily markdown digests.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -19,7 +19,20 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 # Configuration
 OUTPUT_DIR = Path.home() / "memex" / "browser"
 CHROME_BASE = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+SAFARI_HISTORY = Path.home() / "Library" / "Safari" / "History.db"
 ERROR_LOG = OUTPUT_DIR / ".errors.log"
+
+# URL prefixes to exclude (noise for AI context)
+EXCLUDED_PREFIXES = (
+    "chrome://",
+    "chrome-extension://",
+    "edge://",
+    "about:",
+    "file://",
+    "devtools://",
+    "favorites://",
+    "bookmarks://",
+)
 
 # Tracking parameters to strip from URLs
 TRACKING_PARAMS = {
@@ -39,6 +52,9 @@ TRACKING_PARAMS = {
 # WebKit timestamp epoch (Jan 1, 1601) to Unix epoch offset
 WEBKIT_EPOCH_OFFSET = 11644473600
 
+# Mac Absolute Time epoch (Jan 1, 2001) to Unix epoch offset
+MAC_ABSOLUTE_TIME_OFFSET = 978307200
+
 
 def log_error(message: str) -> None:
     """Append error message to error log."""
@@ -51,6 +67,12 @@ def log_error(message: str) -> None:
 def webkit_to_datetime(webkit_timestamp: int) -> datetime:
     """Convert WebKit timestamp (microseconds since 1601) to datetime."""
     unix_timestamp = (webkit_timestamp / 1_000_000) - WEBKIT_EPOCH_OFFSET
+    return datetime.fromtimestamp(unix_timestamp)
+
+
+def mac_absolute_to_datetime(mac_timestamp: float) -> datetime:
+    """Convert Mac Absolute Time (seconds since 2001) to datetime."""
+    unix_timestamp = mac_timestamp + MAC_ABSOLUTE_TIME_OFFSET
     return datetime.fromtimestamp(unix_timestamp)
 
 
@@ -144,6 +166,10 @@ def read_history_from_profile(profile_path: Path, since: datetime | None = None)
 
         for url, title, visit_time in cursor.fetchall():
             try:
+                # Skip excluded URLs (chrome://, extensions, etc.)
+                if url.startswith(EXCLUDED_PREFIXES):
+                    continue
+
                 dt = webkit_to_datetime(visit_time)
                 entries.append({
                     "url": clean_url(url),
@@ -166,69 +192,147 @@ def read_history_from_profile(profile_path: Path, since: datetime | None = None)
     return entries
 
 
-def get_iso_week_range(year: int, week: int) -> tuple[datetime, datetime]:
-    """Get the start (Monday) and end (Sunday) dates for an ISO week."""
-    jan4 = datetime(year, 1, 4)
-    start_of_week1 = jan4 - timedelta(days=jan4.weekday())
-    week_start = start_of_week1 + timedelta(weeks=week - 1)
-    week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
-    return week_start, week_end
+def read_safari_history(since: datetime | None = None) -> list[dict]:
+    """Read history entries from Safari."""
+    if not SAFARI_HISTORY.exists():
+        return []
+
+    entries = []
+    tmp_file = None
+
+    try:
+        # Copy database to avoid lock issues
+        tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        tmp_file.close()
+        shutil.copy2(SAFARI_HISTORY, tmp_file.name)
+
+        conn = sqlite3.connect(tmp_file.name)
+        cursor = conn.cursor()
+
+        # Build query - Safari uses different schema
+        query = """
+            SELECT history_items.url, history_items.title, history_visits.visit_time
+            FROM history_visits
+            JOIN history_items ON history_visits.history_item = history_items.id
+        """
+        params = []
+
+        if since:
+            mac_since = since.timestamp() - MAC_ABSOLUTE_TIME_OFFSET
+            query += " WHERE history_visits.visit_time >= ?"
+            params.append(mac_since)
+
+        query += " ORDER BY history_visits.visit_time ASC"
+
+        cursor.execute(query, params)
+
+        for url, title, visit_time in cursor.fetchall():
+            try:
+                # Skip excluded URLs
+                if url.startswith(EXCLUDED_PREFIXES):
+                    continue
+
+                dt = mac_absolute_to_datetime(visit_time)
+                entries.append({
+                    "url": clean_url(url),
+                    "title": escape_markdown(title or ""),
+                    "timestamp": dt,
+                    "profile": "Safari"
+                })
+            except Exception as e:
+                log_error(f"Failed to process Safari entry: {e}")
+
+        conn.close()
+
+    except Exception as e:
+        log_error(f"Failed to read Safari history: {e}")
+
+    finally:
+        if tmp_file and os.path.exists(tmp_file.name):
+            os.unlink(tmp_file.name)
+
+    return entries
 
 
-def format_week_header(year: int, week: int) -> str:
-    """Format the header for a weekly digest file."""
-    week_start, week_end = get_iso_week_range(year, week)
-    start_str = week_start.strftime("%b %d")
-    end_str = week_end.strftime("%b %d")
-    return f"# Browser History: {year}-W{week:02d} ({start_str} - {end_str})"
+def get_domain(url: str) -> str:
+    """Extract domain from URL."""
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc or url
+    except Exception:
+        return url
 
 
-def group_entries_by_week(entries: list[dict]) -> dict[tuple[int, int], list[dict]]:
-    """Group entries by ISO year and week number."""
-    weeks = {}
+def dedupe_entries(entries: list[dict]) -> list[dict]:
+    """Remove duplicate URLs, keeping the first occurrence."""
+    if not entries:
+        return entries
+
+    seen_urls = set()
+    result = []
     for entry in entries:
-        iso_cal = entry["timestamp"].isocalendar()
-        key = (iso_cal.year, iso_cal.week)
-        if key not in weeks:
-            weeks[key] = []
-        weeks[key].append(entry)
-    return weeks
+        if entry["url"] not in seen_urls:
+            seen_urls.add(entry["url"])
+            result.append(entry)
+    return result
 
 
-def generate_week_markdown(year: int, week: int, entries: list[dict]) -> str:
-    """Generate markdown content for a week's history."""
-    lines = [format_week_header(year, week), ""]
+def count_domains(entries: list[dict]) -> list[tuple[str, int]]:
+    """Count visits per domain, sorted by count descending."""
+    counts = {}
+    for entry in entries:
+        domain = get_domain(entry["url"])
+        counts[domain] = counts.get(domain, 0) + 1
+    return sorted(counts.items(), key=lambda x: (-x[1], x[0]))
 
-    # Group by day
+
+def group_entries_by_day(entries: list[dict]) -> dict[date, list[dict]]:
+    """Group entries by date."""
     days = {}
     for entry in entries:
         day_key = entry["timestamp"].date()
         if day_key not in days:
             days[day_key] = []
         days[day_key].append(entry)
+    return days
 
-    for day in sorted(days.keys()):
-        day_entries = days[day]
-        day_name = day.strftime("%A, %b %d")
-        lines.append(f"## {day_name}")
+
+def generate_day_markdown(day: date, entries: list[dict]) -> str:
+    """Generate markdown content for a day's history."""
+    day_name = day.strftime("%A, %B %d, %Y")
+    lines = [f"# Browser History: {day_name}", ""]
+
+    # Sort by timestamp and dedupe (keeps first visit to each URL)
+    sorted_entries = sorted(entries, key=lambda e: e["timestamp"])
+    deduped_entries = dedupe_entries(sorted_entries)
+
+    # Add domain summary
+    domain_counts = count_domains(deduped_entries)
+    if domain_counts:
+        domain_strs = [f"{domain} ({count})" for domain, count in domain_counts[:10]]
+        if len(domain_counts) > 10:
+            domain_strs.append(f"... and {len(domain_counts) - 10} more")
+        lines.append(f"**Domains:** {', '.join(domain_strs)}")
         lines.append("")
 
-        for entry in sorted(day_entries, key=lambda e: e["timestamp"]):
-            time_str = entry["timestamp"].strftime("%H:%M")
-            title = entry["title"] or "Untitled"
-            url = entry["url"]
-            lines.append(f"- {time_str} - [{title}]({url})")
+    # Add visit entries
+    lines.append("## Visits")
+    lines.append("")
+    for entry in deduped_entries:
+        time_str = entry["timestamp"].strftime("%H:%M")
+        title = entry["title"] or "Untitled"
+        url = entry["url"]
+        lines.append(f"- {time_str} - [{title}]({url})")
 
-        lines.append("")
-
+    lines.append("")
     return "\n".join(lines)
 
 
-def write_week_file(year: int, week: int, entries: list[dict]) -> None:
-    """Write a weekly digest markdown file."""
+def write_day_file(day: date, entries: list[dict]) -> None:
+    """Write a daily digest markdown file."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    filename = OUTPUT_DIR / f"{year}-W{week:02d}.md"
-    content = generate_week_markdown(year, week, entries)
+    filename = OUTPUT_DIR / f"{day.isoformat()}.md"
+    content = generate_day_markdown(day, entries)
 
     with open(filename, "w") as f:
         f.write(content)
@@ -260,51 +364,46 @@ def set_last_run(dt: datetime) -> None:
 
 def main() -> None:
     """Main entry point."""
-    profiles = get_chrome_profiles()
-
-    if not profiles:
-        log_error("No Chrome profiles found")
-        return
-
     # Determine start date
     last_run = get_last_run()
+    today = datetime.now().date()
     if last_run:
-        # Get entries since last run, but regenerate full current week
-        iso_cal = datetime.now().isocalendar()
-        week_start, _ = get_iso_week_range(iso_cal.year, iso_cal.week)
-        since = min(last_run - timedelta(hours=1), week_start)
+        # Get entries since last run, but regenerate full current day
+        day_start = datetime.combine(today, datetime.min.time())
+        since = min(last_run - timedelta(hours=1), day_start)
     else:
         # First run: backfill all available history
         since = None
 
-    # Collect entries from all profiles
     all_entries = []
-    for profile in profiles:
+
+    # Collect from Chrome profiles
+    chrome_profiles = get_chrome_profiles()
+    for profile in chrome_profiles:
         entries = read_history_from_profile(profile, since)
         all_entries.extend(entries)
 
+    # Collect from Safari
+    safari_entries = read_safari_history(since)
+    all_entries.extend(safari_entries)
+
     if not all_entries:
+        if not chrome_profiles and not SAFARI_HISTORY.exists():
+            log_error("No Chrome profiles or Safari history found")
         set_last_run(datetime.now())
         return
 
-    # Group by week and write files
-    weeks = group_entries_by_week(all_entries)
+    # Group by day and write files
+    days = group_entries_by_day(all_entries)
 
-    for (year, week), entries in weeks.items():
-        # For historical weeks, only write if file doesn't exist
-        # For current week, always regenerate
-        iso_cal = datetime.now().isocalendar()
-        is_current_week = (year == iso_cal.year and week == iso_cal.week)
+    for date, entries in days.items():
+        # For historical days, only write if file doesn't exist
+        # For current day, always regenerate
+        is_today = (date == today)
+        filename = OUTPUT_DIR / f"{date.isoformat()}.md"
 
-        filename = OUTPUT_DIR / f"{year}-W{week:02d}.md"
-
-        if is_current_week or not filename.exists():
-            if filename.exists() and is_current_week:
-                # For current week, merge with existing entries
-                # (in case of multiple runs, we don't want to lose data)
-                pass  # Currently regenerating full week from Chrome
-
-            write_week_file(year, week, entries)
+        if is_today or not filename.exists():
+            write_day_file(date, entries)
 
     set_last_run(datetime.now())
 

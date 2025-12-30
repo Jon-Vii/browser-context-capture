@@ -1,10 +1,10 @@
 # Browser Context Capture
 
-A lightweight tool that captures Chrome browsing history into weekly markdown digests for personal recall and AI agent consumption.
+A lightweight tool that captures Chrome and Safari browsing history into daily markdown digests for personal recall and AI agent consumption.
 
 ## Overview
 
-Reads Chrome's existing history database and generates human-readable, AI-friendly weekly digest files. Runs automatically in the background via macOS launchd.
+Reads Chrome and Safari history databases and generates human-readable, AI-friendly daily digest files. Runs automatically in the background via macOS launchd. Safari history synced via iCloud includes browsing from iOS devices.
 
 ## Goals
 
@@ -16,13 +16,15 @@ Reads Chrome's existing history database and generates human-readable, AI-friend
 ## Architecture
 
 ```
-Chrome History DB ──▶ Python Script ──▶ Weekly Markdown Files
-(SQLite)              (hourly via launchd)    (~/memex/browser/)
+Chrome History DB ──┐
+(SQLite)            ├──▶ Python Script ──▶ Daily Markdown Files
+Safari History DB ──┘    (hourly via launchd)    (~/memex/browser/)
+(SQLite)
 ```
 
-### Data Source
+### Data Sources
 
-Chrome stores browsing history in a SQLite database. The script discovers and reads from all Chrome profiles:
+**Chrome** stores browsing history in SQLite databases per profile:
 
 ```
 ~/Library/Application Support/Google/Chrome/*/History
@@ -30,29 +32,38 @@ Chrome stores browsing history in a SQLite database. The script discovers and re
 
 This captures Default, Profile 1, Profile 2, etc.
 
+**Safari** stores browsing history in a single SQLite database:
+
+```
+~/Library/Safari/History.db
+```
+
+With iCloud sync enabled, this includes history from iOS devices.
+
 ### Output Location
 
 ```
 ~/memex/browser/
-├── 2025-W01.md
-├── 2025-W02.md
+├── 2025-12-30.md
+├── 2025-12-31.md
 ├── .errors.log
 └── ...
 ```
 
 ### File Format
 
-Weekly files use ISO 8601 week numbering (Monday-Sunday, week 1 contains January 4th).
+Daily files use ISO 8601 date format (YYYY-MM-DD).
 
 ```markdown
-# Browser History: 2025-W01 (Dec 30 - Jan 5)
+# Browser History: Monday, December 30, 2025
 
-## Monday, Dec 30
+**Domains:** github.com (12), claude.ai (8), stackoverflow.com (5), ...
+
+## Visits
+
 - 09:15 - [Claude Code - GitHub](https://github.com/anthropics/claude-code)
 - 09:32 - [Rust Async Book](https://rust-lang.github.io/async-book/)
 - 10:01 - [How to handle async errors - Stack Overflow](https://stackoverflow.com/questions/12345)
-
-## Tuesday, Dec 31
 - 11:00 - [Apple Developer Documentation](https://developer.apple.com/documentation/)
 ...
 ```
@@ -69,13 +80,13 @@ Weekly files use ISO 8601 week numbering (Monday-Sunday, week 1 contains January
 
 1. Runs hourly via launchd
 2. Discovers all Chrome profiles
-3. Reads history for the current week (and past weeks on first run)
-4. Regenerates weekly markdown files
+3. Reads history for the current day (and past days on first run)
+4. Regenerates daily markdown files
 5. Creates `~/memex/browser/` directory if it doesn't exist
 
 ### Historical Backfill
 
-On first run, the script generates digests for all available history (Chrome typically retains ~90 days). Subsequent runs only update the current week's file.
+On first run, the script generates digests for all available history (Chrome typically retains ~90 days). Subsequent runs only update the current day's file.
 
 ### URL Cleaning
 
@@ -151,12 +162,16 @@ No content extraction, no network requests, no page fetching.
 
 ## What This Does NOT Do
 
-- **No browser extension**: Reads existing Chrome data
+- **No browser extension**: Reads existing browser databases
 - **No content extraction**: Just URL, title, timestamp
-- **No deduplication**: Every visit is recorded
-- **No exclusions**: All browsing captured
-- **No sync**: Local only
-- **No cross-browser**: Chrome only
+- **No cloud sync**: Local databases only (but Safari's local DB includes iCloud-synced history)
+- **Limited browser support**: Chrome and Safari only (no Firefox, Edge, etc.)
+
+## Filtering & Deduplication
+
+- **Excluded URLs**: `chrome://`, `chrome-extension://`, `edge://`, `about:`, `file://`, `devtools://` are filtered out
+- **Consecutive deduplication**: Repeated visits to the same URL in sequence are collapsed to the first occurrence
+- **Domain summary**: Top 10 domains with visit counts shown at the top of each file for quick scanning
 
 ## Directory Structure
 
