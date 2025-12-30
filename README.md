@@ -43,6 +43,42 @@ Files appear as `~/memex/browser/2025-12-30.md`, `2025-12-31.md`, etc.
 - 10:01 - [How to handle async errors - Stack Overflow](https://stackoverflow.com/questions/12345)
 ```
 
+## AI Agent Integration
+
+The markdown format makes your browsing history trivially accessible to AI agents and LLMs, enabling powerful contextual assistance:
+
+### Use Cases
+
+**Research Continuity**
+- "What articles did I read about Rust async yesterday?"
+- "Find that GitHub repo I was looking at this morning"
+- AI agents can reference your actual browsing to provide specific answers
+
+**Context-Aware Assistance**
+- Agents see what you've been researching and can offer relevant suggestions
+- "Based on your recent Swift documentation reading, here's how to..."
+- No need to explain what you've been working on - your browser history provides the context
+
+**Personal Knowledge Base**
+- Daily files integrate seamlessly with note-taking systems (Obsidian, Logseq, etc.)
+- AI can cross-reference browser history with your notes and documents
+- Build a searchable timeline of your digital research
+
+**MCP Server Integration**
+- Use with [Model Context Protocol](https://modelcontextprotocol.io/) servers
+- AI agents can directly read `~/memex/browser/*.md` files
+- Provide automatic browsing context without manual prompting
+
+### Implementation
+
+Simply point your AI agent to `~/memex/browser/` and it can:
+1. Read today's file for recent context
+2. Search across date ranges for specific topics
+3. Correlate browsing patterns with your questions
+4. Reference specific URLs and timestamps in responses
+
+The markdown format means no special parsing - any LLM can instantly understand and utilize your browsing history.
+
 ## Features
 
 - **Multi-profile Chrome support** - Captures history from all your Chrome profiles
