@@ -1,5 +1,11 @@
 # Browser Context Capture
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Platform: macOS](https://img.shields.io/badge/Platform-macOS-blue.svg)](https://www.apple.com/macos/)
+[![Python: 3.9+](https://img.shields.io/badge/Python-3.9+-green.svg)](https://www.python.org/)
+[![Chrome](https://img.shields.io/badge/Browser-Chrome-red.svg)](https://www.google.com/chrome/)
+[![Safari](https://img.shields.io/badge/Browser-Safari-blue.svg)](https://www.apple.com/safari/)
+
 Automatically capture your Chrome and Safari browsing history into daily markdown digests. Perfect for personal recall, journaling, and feeding context to AI agents.
 
 ## What This Does
