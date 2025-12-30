@@ -4,6 +4,7 @@ Browser Context Capture
 
 Reads Chrome browser history and generates weekly markdown digests.
 """
+from __future__ import annotations
 
 import os
 import re
@@ -12,6 +13,7 @@ import sqlite3
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 # Configuration
