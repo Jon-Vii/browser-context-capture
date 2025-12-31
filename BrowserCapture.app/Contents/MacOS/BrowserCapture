@@ -1,0 +1,21 @@
+#!/bin/bash
+# BrowserCapture - Wrapper app for browser history capture
+# This app bundle can receive Full Disk Access permissions from macOS
+
+# Get the directory where this script lives
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# The capture.py script is relative to the app bundle location
+# BrowserCapture.app/Contents/MacOS/BrowserCapture -> ../../.. -> project root
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+CAPTURE_SCRIPT="$PROJECT_DIR/src/capture.py"
+
+# Use Homebrew Python for better compatibility
+PYTHON="/opt/homebrew/bin/python3"
+
+# Fallback to system Python if Homebrew not available
+if [ ! -x "$PYTHON" ]; then
+    PYTHON="/usr/bin/python3"
+fi
+
+exec "$PYTHON" "$CAPTURE_SCRIPT"

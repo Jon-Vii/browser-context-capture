@@ -7,8 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>__SCRIPT_PATH__</string>
+        <string>__APP_EXECUTABLE__</string>
     </array>
 
     <key>StartInterval</key>
