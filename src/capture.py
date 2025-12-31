@@ -6,10 +6,12 @@ Reads Chrome and Safari browser history and generates daily markdown digests.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -21,6 +23,9 @@ OUTPUT_DIR = Path.home() / "memex" / "browser"
 CHROME_BASE = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
 SAFARI_HISTORY = Path.home() / "Library" / "Safari" / "History.db"
 ERROR_LOG = OUTPUT_DIR / ".errors.log"
+STATUS_FILE = OUTPUT_DIR / ".status"
+NOTIFIED_ERRORS_FILE = OUTPUT_DIR / ".notified_errors"
+PERMISSION_ERROR_FILE = OUTPUT_DIR / "PERMISSION_ERROR.txt"
 
 # URL prefixes to exclude (noise for AI context)
 EXCLUDED_PREFIXES = (
@@ -62,6 +67,84 @@ def log_error(message: str) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(ERROR_LOG, "a") as f:
         f.write(f"[{timestamp}] {message}\n")
+
+
+def write_status(status: dict) -> None:
+    """Write JSON status file showing health of each data source."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    status["last_run"] = datetime.now().isoformat()
+    with open(STATUS_FILE, "w") as f:
+        json.dump(status, f, indent=2)
+
+
+def get_notified_errors() -> set[str]:
+    """Get set of error keys we've already notified about."""
+    if not NOTIFIED_ERRORS_FILE.exists():
+        return set()
+    try:
+        return set(NOTIFIED_ERRORS_FILE.read_text().strip().split("\n"))
+    except Exception:
+        return set()
+
+
+def add_notified_error(error_key: str) -> None:
+    """Record that we've notified about this error."""
+    notified = get_notified_errors()
+    notified.add(error_key)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    NOTIFIED_ERRORS_FILE.write_text("\n".join(notified))
+
+
+def clear_notified_error(error_key: str) -> None:
+    """Clear a notified error when it's resolved."""
+    notified = get_notified_errors()
+    notified.discard(error_key)
+    if notified:
+        NOTIFIED_ERRORS_FILE.write_text("\n".join(notified))
+    elif NOTIFIED_ERRORS_FILE.exists():
+        NOTIFIED_ERRORS_FILE.unlink()
+
+
+def send_notification(title: str, message: str) -> None:
+    """Send a macOS notification using osascript."""
+    try:
+        script = f'display notification "{message}" with title "{title}"'
+        subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            timeout=5
+        )
+    except Exception:
+        pass  # Notifications are best-effort
+
+
+def write_error_indicator(errors: list[str]) -> None:
+    """Create a visible error file explaining permission issues."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    content = """MEMEX BROWSER CAPTURE - PERMISSION ERROR
+
+One or more browser history sources cannot be accessed due to macOS permissions.
+
+ERRORS:
+{errors}
+
+HOW TO FIX:
+1. Open System Settings (or System Preferences)
+2. Go to Privacy & Security → Full Disk Access
+3. Click the lock to make changes
+4. Click + and add /usr/bin/python3
+5. Ensure the checkbox is enabled
+
+After granting permission, this file will be automatically removed on the next successful run.
+"""
+    error_list = "\n".join(f"  - {e}" for e in errors)
+    PERMISSION_ERROR_FILE.write_text(content.format(errors=error_list))
+
+
+def remove_error_indicator() -> None:
+    """Remove the visible error file when all errors are resolved."""
+    if PERMISSION_ERROR_FILE.exists():
+        PERMISSION_ERROR_FILE.unlink()
 
 
 def webkit_to_datetime(webkit_timestamp: int) -> datetime:
@@ -129,14 +212,19 @@ def get_chrome_profiles() -> list[Path]:
     return profiles
 
 
-def read_history_from_profile(profile_path: Path, since: datetime | None = None) -> list[dict]:
-    """Read history entries from a Chrome profile."""
+def read_history_from_profile(profile_path: Path, since: datetime | None = None) -> tuple[list[dict], str | None]:
+    """Read history entries from a Chrome profile.
+
+    Returns:
+        Tuple of (entries list, error message or None if successful)
+    """
     history_file = profile_path / "History"
     if not history_file.exists():
-        return []
+        return [], None
 
     entries = []
     tmp_file = None
+    error = None
 
     try:
         # Copy database to avoid lock issues
@@ -182,23 +270,33 @@ def read_history_from_profile(profile_path: Path, since: datetime | None = None)
 
         conn.close()
 
+    except PermissionError as e:
+        error = f"Permission denied - Full Disk Access required"
+        log_error(f"Failed to read history from {profile_path.name}: {e}")
+
     except Exception as e:
+        error = str(e)
         log_error(f"Failed to read history from {profile_path.name}: {e}")
 
     finally:
         if tmp_file and os.path.exists(tmp_file.name):
             os.unlink(tmp_file.name)
 
-    return entries
+    return entries, error
 
 
-def read_safari_history(since: datetime | None = None) -> list[dict]:
-    """Read history entries from Safari."""
+def read_safari_history(since: datetime | None = None) -> tuple[list[dict], str | None]:
+    """Read history entries from Safari.
+
+    Returns:
+        Tuple of (entries list, error message or None if successful)
+    """
     if not SAFARI_HISTORY.exists():
-        return []
+        return [], None
 
     entries = []
     tmp_file = None
+    error = None
 
     try:
         # Copy database to avoid lock issues
@@ -210,8 +308,9 @@ def read_safari_history(since: datetime | None = None) -> list[dict]:
         cursor = conn.cursor()
 
         # Build query - Safari uses different schema
+        # Note: title is in history_visits, not history_items
         query = """
-            SELECT history_items.url, history_items.title, history_visits.visit_time
+            SELECT history_items.url, history_visits.title, history_visits.visit_time
             FROM history_visits
             JOIN history_items ON history_visits.history_item = history_items.id
         """
@@ -244,14 +343,23 @@ def read_safari_history(since: datetime | None = None) -> list[dict]:
 
         conn.close()
 
+    except OSError as e:
+        # errno 1 is "Operation not permitted" - needs Full Disk Access
+        if e.errno == 1:
+            error = "Permission denied - Full Disk Access required"
+        else:
+            error = str(e)
+        log_error(f"Failed to read Safari history: {e}")
+
     except Exception as e:
+        error = str(e)
         log_error(f"Failed to read Safari history: {e}")
 
     finally:
         if tmp_file and os.path.exists(tmp_file.name):
             os.unlink(tmp_file.name)
 
-    return entries
+    return entries, error
 
 
 def get_domain(url: str) -> str:
@@ -376,16 +484,62 @@ def main() -> None:
         since = None
 
     all_entries = []
+    sources_status = {}
+    permission_errors = []
+    notified_errors = get_notified_errors()
 
     # Collect from Chrome profiles
     chrome_profiles = get_chrome_profiles()
     for profile in chrome_profiles:
-        entries = read_history_from_profile(profile, since)
+        entries, error = read_history_from_profile(profile, since)
+        source_name = f"Chrome/{profile.name}"
+
+        if error:
+            sources_status[source_name] = {"status": "error", "error": error}
+            if "Permission denied" in error:
+                permission_errors.append(f"{source_name}: {error}")
+        else:
+            sources_status[source_name] = {"status": "ok", "entries": len(entries)}
+            # Clear any previous notification for this source
+            clear_notified_error(source_name)
+
         all_entries.extend(entries)
 
     # Collect from Safari
-    safari_entries = read_safari_history(since)
+    safari_entries, safari_error = read_safari_history(since)
+
+    if safari_error:
+        sources_status["Safari"] = {"status": "error", "error": safari_error}
+        if "Permission denied" in safari_error:
+            permission_errors.append(f"Safari: {safari_error}")
+    else:
+        sources_status["Safari"] = {"status": "ok", "entries": len(safari_entries)}
+        clear_notified_error("Safari")
+
     all_entries.extend(safari_entries)
+
+    # Handle permission errors - notify once, create visible indicator
+    if permission_errors:
+        write_error_indicator(permission_errors)
+
+        # Send notification for new errors only
+        for error in permission_errors:
+            source = error.split(":")[0]
+            if source not in notified_errors:
+                send_notification(
+                    "Memex Browser Capture",
+                    f"{source} access blocked - grant Full Disk Access to Python"
+                )
+                add_notified_error(source)
+    else:
+        # All good - remove error indicator if it exists
+        remove_error_indicator()
+
+    # Write status file
+    write_status({
+        "sources": sources_status,
+        "has_errors": bool(permission_errors)
+    })
 
     if not all_entries:
         if not chrome_profiles and not SAFARI_HISTORY.exists():
@@ -396,14 +550,14 @@ def main() -> None:
     # Group by day and write files
     days = group_entries_by_day(all_entries)
 
-    for date, entries in days.items():
+    for day_date, entries in days.items():
         # For historical days, only write if file doesn't exist
         # For current day, always regenerate
-        is_today = (date == today)
-        filename = OUTPUT_DIR / f"{date.isoformat()}.md"
+        is_today = (day_date == today)
+        filename = OUTPUT_DIR / f"{day_date.isoformat()}.md"
 
         if is_today or not filename.exists():
-            write_day_file(date, entries)
+            write_day_file(day_date, entries)
 
     set_last_run(datetime.now())
 

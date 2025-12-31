@@ -89,7 +89,48 @@ The markdown format means no special parsing - any LLM can instantly understand 
 - Python 3.9+ (pre-installed on macOS)
 - Chrome or Safari (or both)
 
+## Permissions
+
+### Safari Access (Full Disk Access)
+
+Safari's history database is protected by macOS. To capture Safari history, you need to grant **Full Disk Access** to Python:
+
+1. Open **System Settings** → **Privacy & Security** → **Full Disk Access**
+2. Click the lock and authenticate
+3. Click **+** and add `/usr/bin/python3`
+4. Ensure the checkbox is enabled
+
+Without this permission, Chrome history will still be captured, but Safari will be skipped.
+
+### Troubleshooting Permissions
+
+Check the status file to see if there are any issues:
+
+```bash
+cat ~/memex/browser/.status
+```
+
+Example output when everything works:
+```json
+{
+  "sources": {
+    "Chrome/Default": {"status": "ok", "entries": 25},
+    "Safari": {"status": "ok", "entries": 64}
+  },
+  "has_errors": false,
+  "last_run": "2025-12-31T01:20:35"
+}
+```
+
+If Safari shows a permission error, a `PERMISSION_ERROR.txt` file will appear in `~/memex/browser/` with instructions. This file is automatically removed once the issue is resolved.
+
 ## Recent Updates
+
+### Better Error Visibility
+- Added `.status` JSON file showing health of each browser source
+- macOS notification on first permission error (doesn't spam on repeat runs)
+- Visible `PERMISSION_ERROR.txt` file when access is blocked, with fix instructions
+- Fixed Safari schema compatibility (title column location)
 
 ### Migrate to Daily Files
 Files are now organized by date (`YYYY-MM-DD.md`) for easier browsing and integration with note systems.
