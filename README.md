@@ -22,10 +22,12 @@ Automatically capture your Chrome and Safari browsing history into daily markdow
 ./install.sh
 ```
 
-That's it. The script will:
+The script will:
 1. Create `~/memex/browser/` for your daily history files
 2. Set up hourly automatic captures via launchd
 3. Backfill historical data from your browsers
+
+**Important:** After installation, grant Full Disk Access to `BrowserCapture.app` to enable Safari history capture. See [Permissions](#permissions) below.
 
 Files appear as `~/memex/browser/2025-12-30.md`, `2025-12-31.md`, etc.
 
@@ -93,12 +95,15 @@ The markdown format means no special parsing - any LLM can instantly understand 
 
 ### Safari Access (Full Disk Access)
 
-Safari's history database is protected by macOS. To capture Safari history, you need to grant **Full Disk Access** to Python:
+Safari's history database is protected by macOS. To capture Safari history, you need to grant **Full Disk Access** to the BrowserCapture app:
 
 1. Open **System Settings** → **Privacy & Security** → **Full Disk Access**
 2. Click the lock and authenticate
-3. Click **+** and add `/usr/bin/python3`
-4. Ensure the checkbox is enabled
+3. Click **+** and navigate to the installation directory
+4. Select `BrowserCapture.app` (located in the project folder)
+5. Ensure the toggle is enabled
+
+**Why an app bundle?** macOS TCC (Transparency, Consent, and Control) doesn't properly inherit Full Disk Access permissions for processes launched via launchd. The app bundle wrapper ensures the capture script receives the necessary permissions when triggered automatically.
 
 Without this permission, Chrome history will still be captured, but Safari will be skipped.
 
@@ -125,6 +130,12 @@ Example output when everything works:
 If Safari shows a permission error, a `PERMISSION_ERROR.txt` file will appear in `~/memex/browser/` with instructions. This file is automatically removed once the issue is resolved.
 
 ## Recent Updates
+
+### App Bundle Wrapper for launchd Compatibility
+- Replaced shell wrapper with proper macOS app bundle (`BrowserCapture.app`)
+- Fixes Safari permission denied errors when triggered by launchd
+- Full Disk Access now granted to the app bundle instead of Python/bash
+- Resolves macOS TCC permission inheritance limitations
 
 ### Better Error Visibility
 - Added `.status` JSON file showing health of each browser source
